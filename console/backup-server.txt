@@ -1,0 +1,552 @@
+const express = require('express')
+const mysql = require('mysql2')
+const bodyParser = require('body-parser')
+const cors = require('cors')
+const bcrypt = require('bcrypt')
+const PORT = process.env.PORT || 5000
+
+const app = express()
+app.use(cors())
+app.use(bodyParser.json())
+
+const db = mysql.createConnection({
+  host: 'localhost',
+  user: 'root',
+  password: '',
+  database: 'idex',
+})
+
+db.connect((err) => {
+  if (err) {
+    console.error('Error connecting to the database:', err)
+    return
+  }
+  console.log('Connected to the MySQL database.')
+})
+
+// Login route
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body
+
+  const sql = 'SELECT password FROM admin WHERE username = ?'
+  db.query(sql, [username], (err, results) => {
+    if (err) {
+      return res
+        .status(500)
+        .json({ message: 'Error during login attempt', error: err })
+    } else if (results.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials.' }) // User not found
+    }
+
+    bcrypt.compare(password, results[0].password, (err, isMatch) => {
+      if (err) {
+        return res
+          .status(500)
+          .json({ message: 'Error during login attempt', error: err })
+      }
+
+      if (isMatch) {
+        return res.json({ message: 'Login successful.' })
+      } else {
+        return res.json({ message: 'Invalid credentials.' })
+      }
+    })
+  })
+})
+
+// Register route
+app.post('/api/auth/register', (req, res) => {
+  const { username, password } = req.body
+
+  if (!username || !password) {
+    return res
+      .status(400)
+      .json({ message: 'Username and password are required.' })
+  }
+
+  const query = 'SELECT * FROM admin WHERE username = ?'
+  db.query(query, [username], (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: 'Database error', error: err })
+    }
+
+    if (results.length > 0) {
+      return res.status(400).json({ message: 'Username already exists.' })
+    }
+
+    bcrypt.hash(password, 10, (err, hash) => {
+      if (err) {
+        return res
+          .status(500)
+          .json({ message: 'Error hashing password', error: err })
+      }
+
+      const insertQuery = 'INSERT INTO admin (username, password) VALUES (?, ?)'
+      db.query(insertQuery, [username, hash], (err, result) => {
+        if (err) {
+          return res.status(500).json({ message: 'Database error', error: err })
+        }
+
+        res.json({ message: 'Registration successful' })
+      })
+    })
+  })
+})
+
+// Endpoint to get all records
+app.get('/api/records', (req, res) => {
+  db.query('SELECT * FROM records', (err, results) => {
+    if (err) {
+      console.error('Error fetching records:', err)
+      return res.status(500).json({ error: 'Failed to fetch records' })
+    }
+    return res.json(results)
+  })
+})
+
+// Endpoint to add a new record
+app.post('/api/records', (req, res) => {
+  const { slNo, workPartNumber, partNumber, quantity, startDate, endDate } =
+    req.body
+  const query =
+    'INSERT INTO records (slNo, workPartNumber, partNumber, quantity, startDate, endDate) VALUES (?, ?, ?, ?, ?, ?)'
+  db.query(
+    query,
+    [slNo, workPartNumber, partNumber, quantity, startDate, endDate],
+    (err, result) => {
+      if (err) {
+        console.error('Error adding record:', err)
+        res.status(500).json({ error: 'Failed to add record' })
+        return
+      }
+      res.status(201).json({ message: 'Record added successfully' })
+    }
+  )
+})
+
+// Endpoint to delete a record  
+app.post('/api/records/delete/:id', (req, res) => {
+  const recordId = req.params.id
+  const query = 'DELETE FROM records WHERE id = ?'
+  db.query(query, [recordId], (err, result) => {
+    if (err) {
+      console.error('Error deleting record:', err)
+      return res.status(500).json({ error: 'Failed to delete record' })
+    }
+    return res.status(200).json({ message: 'Record deleted successfully' })
+  })
+})
+
+// Endpoint to get RFID details for a specific record
+app.get('/api/records/:recordId/rfid', (req, res) => {
+  const recordId = req.params.recordId
+  const query =
+    'SELECT ID, Zone, RFIDNumber, RFIDName FROM rfidlist WHERE ID = ?'
+  db.query(query, [recordId], (err, results) => {
+    if (err) {
+      console.error('Error fetching RFID details:', err)
+      return res.status(500).json({ error: 'Failed to fetch RFID details' })
+    }
+    return res.json(results)
+  })
+})
+
+// Endpoint to add RFID details to a specific record
+app.post('/api/records/:recordId/rfid', (req, res) => {
+  const { recordId } = req.params
+  const { zone, rfidName, rfidNumber } = req.body
+
+  // Query to find the record ID based on work part number and part number
+  const query =
+    'SELECT id FROM records WHERE workPartNumber = ? AND partNumber = ?'
+  db.query(
+    query,
+    [req.body.workPartNumber, req.body.partNumber],
+    (err, results) => {
+      if (err) {
+        console.error('Error finding record ID:', err)
+        res.status(500).json({ error: 'Failed to add RFID details' })
+        return
+      }
+
+      if (results.length === 0) {
+        // Record not found
+        res.status(404).json({ message: 'Record not found' })
+        return
+      }
+
+      const recordId = results[0].id
+
+      // Query to insert RFID details into the rfidlist table
+      const insertQuery =
+        'INSERT INTO rfidlist (ID, Zone, RFIDName, RFIDNumber) VALUES (?, ?, ?, ?)'
+      db.query(
+        insertQuery,
+        [recordId, zone, rfidName, rfidNumber],
+        (err, result) => {
+          if (err) {
+            console.error('Error adding RFID details:', err)
+            res.status(500).json({ error: 'Failed to add RFID details' })
+            return
+          }
+          res.status(201).json({ message: 'RFID details added successfully' })
+        }
+      )
+    }
+  )
+})
+
+// Endpoint to delete an RFID detail from a record
+app.delete('/api/records/:recordId/rfid/:rfidId', (req, res) => {
+  const { recordId, rfidId } = req.params
+
+  const query = 'DELETE FROM rfidlist WHERE ID = ? AND RFIDNumber = ?'
+  db.query(query, [recordId, rfidId], (err, result) => {
+    if (err) {
+      console.error('Error deleting RFID detail:', err)
+      res.status(500).json({ error: 'Failed to delete RFID detail' })
+      return
+    }
+
+    if (result.affectedRows === 0) {
+      // No RFID detail deleted (perhaps not found)
+      res.status(404).json({ message: 'RFID detail not found' })
+      return
+    }
+
+    // RFID detail deleted successfully
+    res.status(200).json({ message: 'RFID detail deleted successfully' })
+  })
+})
+
+//locations 
+app.get('/api/locations', (req, res) => {
+  const sql = 'SELECT * FROM locations';
+  db.query(sql, (err, result) => {
+    if (err) {
+      console.error('Error inserting location:', err);
+      return res.status(500).json({ error: 'Error inserting location' });
+    }
+    return result.length > 0 ?
+      res.status(201).json({ result }) : res.status(200).json({ message: "0 records attached. " })
+  });
+});
+
+app.post('/api/locations/:id', (req, res) => {
+  const { id } = req.params;
+  const { name, description } = req.body
+  const sql = "SELECT * FROM locations where id = ?";
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error('Error updating location:', err);
+      return res.status(500).json({ error: 'Error updating location' });
+    }
+    const newQuery = result.length > 0 ? "UPDATE locations SET name = ?, description = ? WHERE id = ?" :
+      "INSERT INTO locations (name, description) VALUES (?, ?)";
+    db.query(newQuery, [name, description, id], (err, results) => {
+      if (err) {
+        console.error('Error updating table location:', err);
+        return res.status(500).json({ error: 'Error updating table location' });
+      }
+      return res.status(200).json({ message: 'Record saved. ', results });
+    })
+  })
+})
+
+app.post('/delete/locations/:id', (req, res) => {
+  const { id } = req.params;
+  const sql = 'DELETE FROM locations WHERE id = ?';
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error('Error deleting location:', err);
+      return res.status(500).json({ error: 'Error deleting location' });
+    }
+    return res.status(204).json({ result: `Location ID: ${id} has been deleted.` });
+  });
+});
+
+//readers
+app.get('/readers', (req, res) => {
+  db.query('SELECT * FROM readers', (err, results) => {
+    if (err) throw err;
+    res.json(results);
+  });
+});
+
+app.post('/readers', (req, res) => {
+  const { location, readerName, readerIp, readerTag, terminalReader } = req.body;
+  const query = 'INSERT INTO readers (location, readerName, readerIp, readerTag, terminalReader) VALUES (?, ?, ?, ?, ?)';
+  db.query(query, [location, readerName, readerIp, readerTag, terminalReader], (err, result) => {
+    if (err) throw err;
+    res.json({ id: result.insertId });
+  });
+});
+
+app.put('/readers/:id', (req, res) => {
+  const { id } = req.params;
+  const { location, readerName, readerIp, readerTag, terminalReader } = req.body;
+  const query = 'UPDATE readers SET location = ?, readerName = ?, readerIp = ?, readerTag = ?, terminalReader = ? WHERE id = ?';
+  db.query(query, [location, readerName, readerIp, readerTag, terminalReader, id], (err, result) => {
+    if (err) throw err;
+    res.sendStatus(200);
+  });
+});
+
+app.delete('/readers/:id', (req, res) => {
+  const { id } = req.params;
+  const query = 'DELETE FROM readers WHERE id = ?';
+  db.query(query, [id], (err, result) => {
+    if (err) throw err;
+    res.sendStatus(200);
+  });
+});
+
+//port vs cycleTime
+app.get('/api/parts', (req, res) => {
+  db.query('SELECT * FROM parts', (err, results) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send(err);
+    } else {
+      res.status(200).json({ results });
+    }
+  });
+});
+
+// Add a new part
+app.post('/api/parts', (req, res) => {
+  const { part_number, operation, cycle_time } = req.body;
+  db.query('INSERT INTO parts (part_number, operation, cycle_time) VALUES (?, ?, ?)', [part_number, operation, cycle_time], (err, results) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send(err);
+    } else {
+      res.status(201).send('Part added successfully.');
+    }
+  });
+});
+
+// Update a part
+app.put('/api/parts/:id', (req, res) => {
+  const { id } = req.params;
+  const { part_number, operation, cycle_time } = req.body;
+  db.query('UPDATE parts SET part_number = ?, operation = ?, cycle_time = ? WHERE id = ?', [part_number, operation, cycle_time, id], (err, results) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send(err);
+    } else {
+      res.status(200).send('Part updated successfully.');
+    }
+  });
+});
+
+// Delete a part
+app.delete('/api/parts/:id', (req, res) => {
+  const { id } = req.params;
+  db.query('DELETE FROM parts WHERE id = ?', [id], (err, results) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send(err);
+    } else {
+      res.status(200).send('Part deleted successfully.');
+    }
+  });
+});
+
+//tag master
+// Route to fetch all tags
+app.get('/tags', (req, res) => {
+  const query = 'SELECT * FROM tags';
+  db.query(query, (err, result) => {
+    if (err) {
+      console.error('Error fetching tags: ', err);
+      res.status(500).send('Error fetching tags');
+      return;
+    }
+    res.status(200).json(result);
+  });
+});
+
+// Add Tag
+app.post('/tags/add', (req, res) => {
+  const { tagType, tagDescription } = req.body;
+  const query = 'INSERT INTO tags (tagType, tagDescription) VALUES (?, ?)';
+  db.query(query, [tagType, tagDescription], (err, result) => {
+    if (err) {
+      console.error('Error adding tag: ', err);
+      res.status(500).send('Error adding tag');
+      return;
+    }
+    res.status(200).send('Tag added successfully');
+  });
+});
+
+// Edit Tag
+app.put('/tags/edit/:id', (req, res) => {
+  const id = req.params.id;
+  const { tagType, tagDescription } = req.body;
+  const query = 'UPDATE tags SET tagType=?, tagDescription=? WHERE id=?';
+  db.query(query, [tagType, tagDescription, id], (err, result) => {
+    if (err) {
+      console.error('Error updating tag: ', err);
+      res.status(500).send('Error updating tag');
+      return;
+    }
+    res.status(200).send('Tag updated successfully');
+  });
+});
+
+// Delete Tag
+app.delete('/tags/delete/:id', (req, res) => {
+  const id = req.params.id;
+  const query = 'DELETE FROM tags WHERE id=?';
+  db.query(query, [id], (err, result) => {
+    if (err) {
+      console.error('Error deleting tag: ', err);
+      res.status(500).send('Error deleting tag');
+      return;
+    }
+    res.status(200).send('Tag deleted successfully');
+  });
+});
+
+//Trolley master
+// fetch all trolleys
+app.get('/trolleys', (req, res) => {
+  const sql = 'SELECT * FROM trolleys';
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('Error fetching trolleys: ', err);
+      res.status(500).send('Error fetching trolleys');
+      return;
+    }
+    res.json(results);
+  });
+});
+
+//add a trolley
+app.post('/trolleys', (req, res) => {
+  const { trolleyNumber, trolleyName, trolleyDescription } = req.body;
+  const sql = 'INSERT INTO trolleys (trolleyNumber, trolleyName, trolleyDescription) VALUES (?, ?, ?)';
+  db.query(sql, [trolleyNumber, trolleyName, trolleyDescription], (err, result) => {
+    if (err) {
+      console.error('Error adding trolley: ', err);
+      res.status(500).send('Error adding trolley');
+      return;
+    }
+    console.log('Trolley added successfully');
+    res.sendStatus(200);
+  });
+});
+
+//edit a trolley
+app.put('/trolleys/:id', (req, res) => {
+  const id = req.params.id;
+  const { trolleyNumber, trolleyName, trolleyDescription } = req.body;
+  const sql = 'UPDATE trolleys SET trolleyNumber = ?, trolleyName = ?, trolleyDescription = ? WHERE id = ?';
+  db.query(sql, [trolleyNumber, trolleyName, trolleyDescription, id], (err, result) => {
+    if (err) {
+      console.error('Error editing trolley: ', err);
+      res.status(500).send('Error editing trolley');
+      return;
+    }
+    console.log('Trolley edited successfully');
+    res.sendStatus(200);
+  });
+});
+
+//delete a trolley
+app.delete('/trolleys/:id', (req, res) => {
+  const id = req.params.id;
+  const sql = 'DELETE FROM trolleys WHERE id = ?';
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error('Error deleting trolley: ', err);
+      res.status(500).send('Error deleting trolley');
+      return;
+    }
+    console.log('Trolley deleted successfully');
+    res.sendStatus(200);
+  });
+});
+
+//Line master
+// fetch all lines
+app.get('/linesm', async (req, res) => {
+  try {
+    const sql = "SELECT * FROM linesm"
+    db.query(sql, (err, results) => {
+      if (err) {
+        console.error('Error fetching records:', err);
+        return res.status(500).json({ error: 'Error fetching records' });
+      }
+      return res.status(200).json({ rows: results })
+    })
+  } catch (err) {
+    console.error('Error fetching lines:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//add a line
+app.post('/linesm', (req, res) => {
+  const { id, line, lineDescription } = req.body;
+  const sql = "SELECT * FROM linesm where id = ?";
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error('Error locating record:', err);
+      return res.status(500).json({ error: 'Error locating record' });
+    }
+    const newQuery = result.length > 0 ? "UPDATE linesm SET line = ?, line_description = ? WHERE id = ?" :
+      "INSERT INTO linesm (line, line_description) VALUES (?, ?)";
+    db.query(newQuery, [line, lineDescription, id], (err, results) => {
+      if (err) {
+        console.error('Error updating table location:', err);
+        return res.status(500).json({ error: 'Error updating table location' });
+      }
+      return res.status(200).json({ message: 'Record saved. ', results });
+    })
+  })
+});
+
+//edit a line
+// app.put('/linesm/:id', async (req, res) => {
+//   const { id } = req.params;
+//   const { line, lineDescription } = req.body;
+//   try {
+//     if (!line || !lineDescription) {
+//       return res.status(400).json({ error: 'Line and Line Description are required' });
+//     }
+//     await db.query('UPDATE linesm SET line = ?, line_description = ? WHERE id = ?', [line, lineDescription, id]);
+//     res.json({ id, line, lineDescription });
+//   } catch (err) {
+//     console.error('Error updating line:', err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+//delete a line
+app.post('/linesm/delete/:id', (req, res) => {
+  const { id } = req.params;
+  try {
+    const sql = "SELECT * FROM linesm WHERE id = ?"
+    db.query(sql, [id], (err, result) => {
+      if (err) {
+        console.error('Error fetching record:', err);
+        return res.status(500).json({ error: 'Error fetching record' });
+      }
+      const deleteQuery = "DELETE FROM linesm WHERE id = ?"
+      db.query(deleteQuery, [id], (err, result) => {
+
+        return err ? res.status(500).json({ error: `Error deleting record` }) : res.status(200).json({ message: 'Record deleted' })
+      })
+    })
+  } catch (err) {
+    console.error('Error fetching lines:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port http://0.0.0.0:${PORT}/`)
+})
